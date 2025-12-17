@@ -18,13 +18,13 @@ export interface User {
   id: string;
   name: string;
   phoneNumber: string;
-  password?: string; // Optional for mock, mandatory for real registration
+  password?: string;
   role: UserRole;
   location: {
     county: string;
-    district?: string;
-    division?: string;
-    locationName?: string;
+    district: string;
+    division: string;
+    locationName: string;
     sublocation: string;
     village: string;
   };
@@ -37,27 +37,19 @@ export interface Animal {
   species: 'Cattle' | 'Goat' | 'Sheep' | 'Pig' | 'Camel';
   ownerId: string;
   status: AnimalStatus;
-  description: string; // AI Generated
+  description: string;
   photoUrl: string;
-  biometricHash?: string; // The unique ID from the iris scan
+  biometricHash?: string;
   registeredDate: string;
   transferHistory: TransferRecord[];
-}
-
-export interface TransferRequest {
-  id: string;
-  animalId: string;
-  fromUserId: string;
-  toUserId: string;
-  status: 'PENDING' | 'ACCEPTED' | 'REJECTED';
-  timestamp: string;
 }
 
 export interface TransferRecord {
   date: string;
   fromUserId: string;
   toUserId: string;
-  type: 'SALE' | 'INHERITANCE';
+  type: 'SALE' | 'INHERITANCE' | 'BUTCHERY_TRANSFER';
+  weight?: number;
 }
 
 export interface Alert {

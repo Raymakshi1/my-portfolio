@@ -18,13 +18,13 @@ export interface User {
   id: string;
   name: string;
   phoneNumber: string;
-  password?: string; // Simple auth
+  password?: string;
   role: UserRole;
   location: {
     county: string;
     district: string;
     division: string;
-    locationName: string; // The administrative "Location"
+    locationName: string;
     sublocation: string;
     village: string;
   };
@@ -37,24 +37,11 @@ export interface Animal {
   species: 'Cattle' | 'Goat' | 'Sheep' | 'Pig' | 'Camel';
   ownerId: string;
   status: AnimalStatus;
-  description: string; // AI Generated
-  photos: {
-    front: string;
-    left: string;
-    right: string;
-  };
+  description: string;
+  photoUrl: string;
   biometricHash?: string;
   registeredDate: string;
   transferHistory: TransferRecord[];
-}
-
-export interface TransferRequest {
-  id: string;
-  animalId: string;
-  fromUserId: string;
-  toUserId: string;
-  status: 'PENDING' | 'ACCEPTED' | 'REJECTED';
-  timestamp: string;
 }
 
 export interface TransferRecord {
@@ -62,7 +49,7 @@ export interface TransferRecord {
   fromUserId: string;
   toUserId: string;
   type: 'SALE' | 'INHERITANCE' | 'BUTCHERY_TRANSFER';
-  weight?: number; // For butchery transfers
+  weight?: number;
 }
 
 export interface Alert {
@@ -70,7 +57,6 @@ export interface Alert {
   type: 'STOLEN' | 'RED_ZONE';
   animalId: string;
   details: string;
-  targetCounty: string; // Broadcast mainly to county
   timestamp: string;
   resolved: boolean;
 }

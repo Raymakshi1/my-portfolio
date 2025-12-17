@@ -1,15 +1,15 @@
 import React, { useState, useRef, useEffect } from 'react';
 import { StoreProvider, useStore } from './services/store';
-import { UserRole, AnimalStatus, Animal, User } from './types';
+import { UserRole, AnimalStatus, Animal } from './types';
 import { generateAnimalDescription, analyzeTheftRisk, validateIrisScan } from './services/geminiService';
 import { 
-  Menu, X, ShieldAlert, ScanLine, User as UserIcon, PlusCircle, 
+  X, ShieldAlert, ScanLine, User as UserIcon, PlusCircle, 
   Search, LogOut, CheckCircle, AlertTriangle, 
-  Camera, ShoppingBag, Utensils, Skull, Bell, Edit3
+  Camera, ShoppingBag, Utensils, Skull, Eye, ArrowRightLeft, Lock
 } from 'lucide-react';
-import { PieChart, Pie, Cell, ResponsiveContainer, Tooltip } from 'recharts';
+import { Tooltip, ResponsiveContainer, PieChart, Pie, Cell } from 'recharts';
 
-// --- SHARED COMPONENTS ---
+// --- COMPONENTS ---
 
 const Button: React.FC<React.ButtonHTMLAttributes<HTMLButtonElement> & { variant?: 'primary' | 'secondary' | 'danger' | 'outline' }> = ({ className, variant = 'primary', ...props }) => {
   const baseStyle = "px-4 py-2 rounded-lg font-medium transition-colors duration-200 flex items-center justify-center gap-2 disabled:opacity-50 disabled:cursor-not-allowed";
@@ -38,536 +38,840 @@ const Badge: React.FC<{ status: AnimalStatus }> = ({ status }) => {
   return <span className={`px-2 py-1 rounded-full text-xs font-bold uppercase ${styles[status]}`}>{status.replace('_', ' ')}</span>;
 };
 
-// --- IMAGE UTILS ---
-const compressImage = (file: File): Promise<string> => {
-  return new Promise((resolve, reject) => {
-    const reader = new FileReader();
-    reader.readAsDataURL(file);
-    reader.onload = (event) => {
-      const img = new Image();
-      img.src = event.target?.result as string;
-      img.onload = () => {
-        const canvas = document.createElement('canvas');
-        // Max width 600px is sufficient for mobile display and small enough for localStorage
-        const MAX_WIDTH = 600; 
-        const scaleSize = MAX_WIDTH / img.width;
-        canvas.width = MAX_WIDTH;
-        canvas.height = img.height * scaleSize;
-        const ctx = canvas.getContext('2d');
-        if (ctx) {
-            ctx.drawImage(img, 0, 0, canvas.width, canvas.height);
-            // Compress to 60% quality JPEG
-            resolve(canvas.toDataURL('image/jpeg', 0.6));
-        } else {
-            resolve(event.target?.result as string);
-        }
-      };
-      img.onerror = (e) => reject(e);
-    };
-    reader.onerror = (e) => reject(e);
-  });
-};
-
-// --- ERROR BOUNDARY ---
-class ErrorBoundary extends React.Component<{ children: React.ReactNode }, { hasError: boolean, error: Error | null }> {
-  constructor(props: any) {
-    super(props);
-    this.state = { hasError: false, error: null };
-  }
-  static getDerivedStateFromError(error: Error) { return { hasError: true, error }; }
-  componentDidCatch(error: Error, errorInfo: any) { console.error("Uncaught error:", error, errorInfo); }
-  render() {
-    if (this.state.hasError) {
-      return (
-        <div className="p-6 text-center text-red-600 h-screen flex flex-col justify-center items-center bg-slate-50">
-          <AlertTriangle className="w-12 h-12 mb-4" />
-          <h2 className="text-xl font-bold">Something went wrong</h2>
-          <p className="text-sm text-slate-600 mt-2 mb-4 max-w-xs mx-auto break-words">{this.state.error?.message}</p>
-          <div className="flex gap-2">
-            <button onClick={() => { localStorage.clear(); window.location.reload(); }} className="px-4 py-2 bg-slate-800 text-white rounded">Reset Data</button>
-            <button onClick={() => window.location.reload()} className="px-4 py-2 border border-slate-800 rounded">Reload</button>
-          </div>
-        </div>
-      );
-    }
-    return this.props.children;
-  }
-}
-
-// --- BIOMETRIC SCANNER ---
-const BiometricScanner: React.FC<{ onScanComplete: (hash: string) => void, mode?: 'REGISTER' | 'IDENTIFY' }> = ({ onScanComplete, mode = 'REGISTER' }) => {
+// --- BIOMETRIC SCANNER COMPONENT ---
+const BiometricScanner: React.FC<{ onScanComplete: (hash: string) => void }> = ({ onScanComplete }) => {
     const videoRef = useRef<HTMLVideoElement>(null);
     const canvasRef = useRef<HTMLCanvasElement>(null);
-    const streamRef = useRef<MediaStream | null>(null);
     const [scanning, setScanning] = useState(false);
-    const [simulating, setSimulating] = useState(false);
-    const [error, setError] = useState('');
+    const [error, setError] = useState<string>('');
 
     useEffect(() => {
+        let stream: MediaStream | null = null;
+        
         const startCamera = async () => {
             try {
-                const stream = await navigator.mediaDevices.getUserMedia({ 
-                    video: { facingMode: 'environment', width: { ideal: 640 }, height: { ideal: 480 } } 
+                stream = await navigator.mediaDevices.getUserMedia({ 
+                    video: { facingMode: 'environment' } 
                 });
-                streamRef.current = stream;
-                if (videoRef.current) videoRef.current.srcObject = stream;
-            } catch (err) { 
-                console.error("Camera error", err); 
-                setError("Camera access denied or unavailable.");
+                if (videoRef.current) {
+                    videoRef.current.srcObject = stream;
+                }
+            } catch (err) {
+                console.error("Camera access denied:", err);
+                setError("Camera access denied. Please allow permissions.");
             }
         };
+
         startCamera();
-        
-        return () => { 
-            if (streamRef.current) {
-                streamRef.current.getTracks().forEach(track => track.stop());
+
+        return () => {
+            if (stream) {
+                stream.getTracks().forEach(track => track.stop());
             }
         };
     }, []);
 
     const captureAndScan = async () => {
         if (!videoRef.current || !canvasRef.current) return;
+        
         setScanning(true);
         const video = videoRef.current;
         const canvas = canvasRef.current;
         const context = canvas.getContext('2d');
+        
         if (context) {
-            // Lower resolution for performance and storage
-            canvas.width = 320; 
-            canvas.height = 240;
+            canvas.width = video.videoWidth;
+            canvas.height = video.videoHeight;
             context.drawImage(video, 0, 0, canvas.width, canvas.height);
-            const base64Data = canvas.toDataURL('image/jpeg', 0.6); // Compress heavily for Iris preview
+            const base64Data = canvas.toDataURL('image/jpeg');
             
-            // Artificial delay for UX
-            await new Promise(r => setTimeout(r, 1000));
-            
+            // Validate with AI
             const result = await validateIrisScan(base64Data);
             
-            if(result.valid) {
+            if (result.valid) {
                 onScanComplete(result.hash);
             } else {
+                setError("Scan failed. No valid iris/eye detected. Try getting closer.");
                 setScanning(false);
-                alert("Scan failed. Try again.");
             }
         }
     };
 
-    const handleSimulate = () => {
-        setSimulating(true);
-        setTimeout(() => {
-            onScanComplete(`BIO-SIM-${Date.now()}`);
-            setSimulating(false);
-        }, 1500);
-    };
-
-    if (error) {
-        return (
-            <div className="flex flex-col items-center justify-center p-6 bg-red-50 rounded-lg text-red-600">
-                <AlertTriangle className="w-8 h-8 mb-2" />
-                <p>{error}</p>
-                <Button onClick={handleSimulate} variant="outline" className="mt-4">Use Simulator Mode</Button>
-            </div>
-        );
-    }
-
     return (
         <div className="flex flex-col items-center gap-4">
-            <div className="relative w-full aspect-square bg-black rounded-xl overflow-hidden">
-                <video ref={videoRef} autoPlay playsInline muted className="w-full h-full object-cover" />
-                <div className="absolute inset-0 flex items-center justify-center pointer-events-none border-2 border-primary/50 rounded-xl">
-                    <div className="w-48 h-48 border-2 border-primary rounded-full animate-pulse"></div>
-                </div>
-                {(scanning || simulating) && (
-                    <div className="absolute inset-0 bg-black/80 flex flex-col items-center justify-center text-white z-10">
-                        <div className="w-8 h-8 border-4 border-t-white border-transparent rounded-full animate-spin mb-2"></div>
-                        <p>Verifying Biometrics...</p>
+            <div className="relative w-full aspect-square bg-black rounded-xl overflow-hidden shadow-inner">
+                {error ? (
+                    <div className="flex items-center justify-center h-full text-white text-center p-4">
+                        <AlertTriangle className="w-8 h-8 text-red-500 mb-2" />
+                        <p>{error}</p>
                     </div>
+                ) : (
+                    <>
+                        <video 
+                            ref={videoRef} 
+                            autoPlay 
+                            playsInline 
+                            className="w-full h-full object-cover"
+                        />
+                        {/* Scanner Overlay */}
+                        <div className="absolute inset-0 flex items-center justify-center pointer-events-none">
+                            <div className="w-48 h-48 border-2 border-primary/70 rounded-full animate-pulse flex items-center justify-center">
+                                <div className="w-40 h-40 border border-white/50 rounded-full"></div>
+                                <div className="absolute top-0 w-full h-0.5 bg-red-500 animate-[scan_2s_ease-in-out_infinite]"></div>
+                            </div>
+                        </div>
+                        {scanning && (
+                            <div className="absolute inset-0 bg-black/50 flex items-center justify-center text-white">
+                                <div className="flex flex-col items-center">
+                                    <div className="w-8 h-8 border-4 border-t-white border-transparent rounded-full animate-spin mb-2"></div>
+                                    <p>Verifying Biometrics...</p>
+                                </div>
+                            </div>
+                        )}
+                    </>
                 )}
                 <canvas ref={canvasRef} className="hidden" />
             </div>
-            <div className="flex gap-2 w-full">
-                <Button onClick={captureAndScan} disabled={scanning || simulating} className="flex-1">
-                    {mode === 'REGISTER' ? 'Scan Iris' : 'Identify'}
+            
+            {!error && (
+                <Button onClick={captureAndScan} disabled={scanning} className="w-full">
+                    {scanning ? 'Processing...' : 'Capture Iris Scan'}
                 </Button>
-                <Button onClick={handleSimulate} variant="outline" disabled={scanning || simulating} className="flex-1">Simulate</Button>
-            </div>
+            )}
+             <p className="text-xs text-slate-400 text-center">Center the animal's eye in the circle.</p>
         </div>
     );
 };
 
-// --- AUTHENTICATION VIEW ---
-const AuthView: React.FC = () => {
+// --- VIEWS ---
+
+const LoginView: React.FC = () => {
   const { login, registerUser } = useStore();
-  const [isLogin, setIsLogin] = useState(true);
+  const [isRegistering, setIsRegistering] = useState(false);
+  const [loading, setLoading] = useState(false);
+  
+  // Login State
+  const [phone, setPhone] = useState('');
+  const [password, setPassword] = useState('');
   
   // Registration State
   const [regData, setRegData] = useState({
-      name: '', phone: '', password: '',
-      county: '', district: '', division: '', locationName: '', sublocation: '', village: '',
-      role: UserRole.FARMER
+      name: '',
+      phoneNumber: '',
+      password: '',
+      role: UserRole.FARMER,
+      county: '',
+      district: '',
+      division: '',
+      locationName: '',
+      sublocation: '',
+      village: ''
   });
 
-  const handleSubmit = (e: React.FormEvent) => {
-    e.preventDefault();
-    if(isLogin) {
-        if(!login(regData.phone, regData.password)) alert("Invalid Credentials");
-    } else {
-        const values = Object.values(regData);
-        if(values.some(v => v === '')) { alert("All fields required"); return; }
-        
-        registerUser({
-            name: regData.name, phoneNumber: regData.phone, password: regData.password, role: regData.role,
-            location: {
-                county: regData.county, district: regData.district, division: regData.division,
-                locationName: regData.locationName, sublocation: regData.sublocation, village: regData.village
-            }
-        });
-        alert("Registered! Please login.");
-        setIsLogin(true);
-    }
+  const handleLogin = async (e: React.FormEvent) => {
+      e.preventDefault();
+      setLoading(true);
+      const success = await login(phone, password);
+      setLoading(false);
+      if(!success) alert("Invalid credentials or user not found.");
+  };
+
+  const handleRegister = async (e: React.FormEvent) => {
+      e.preventDefault();
+      setLoading(true);
+      await registerUser({
+          name: regData.name,
+          phoneNumber: regData.phoneNumber,
+          password: regData.password,
+          role: regData.role,
+          location: {
+              county: regData.county,
+              district: regData.district,
+              division: regData.division,
+              locationName: regData.locationName,
+              sublocation: regData.sublocation,
+              village: regData.village
+          }
+      });
+      setLoading(false);
   };
 
   return (
-    <div className="min-h-screen bg-slate-50 flex flex-col justify-center items-center p-6 pb-20 overflow-y-auto">
-        <div className="w-full max-w-md bg-white p-6 rounded-2xl shadow-lg my-10">
-            <div className="text-center mb-6">
-                <ScanLine className="w-12 h-12 text-primary mx-auto mb-2" />
-                <h1 className="text-xl font-bold">Cattle Tracker</h1>
-                <p className="text-sm text-slate-500">{isLogin ? "Login to your account" : "Complete Registration"}</p>
+    <div className="min-h-screen bg-slate-50 flex flex-col justify-center items-center p-6">
+      <div className="w-full max-w-md bg-white p-8 rounded-2xl shadow-lg">
+        <div className="flex justify-center mb-6">
+            <div className="w-20 h-20 bg-primary rounded-full flex items-center justify-center">
+                <ScanLine className="w-10 h-10 text-white" />
             </div>
-
-            <form onSubmit={handleSubmit} className="space-y-3">
-                {!isLogin && <input type="text" placeholder="Full Name" className="w-full p-3 border rounded" value={regData.name} onChange={e=>setRegData({...regData, name: e.target.value})} />}
-                <input type="tel" placeholder="Phone Number" className="w-full p-3 border rounded" value={regData.phone} onChange={e=>setRegData({...regData, phone: e.target.value})} />
-                <input type="password" placeholder="Password" className="w-full p-3 border rounded" value={regData.password} onChange={e=>setRegData({...regData, password: e.target.value})} />
-
-                {!isLogin && (
-                    <div className="space-y-2 pt-2 border-t mt-2">
-                        <p className="text-xs font-bold text-slate-500 uppercase">Location Details</p>
-                        <div className="grid grid-cols-2 gap-2">
-                            <input type="text" placeholder="County" className="p-2 border rounded text-sm" value={regData.county} onChange={e=>setRegData({...regData, county: e.target.value})} />
-                            <input type="text" placeholder="District" className="p-2 border rounded text-sm" value={regData.district} onChange={e=>setRegData({...regData, district: e.target.value})} />
-                            <input type="text" placeholder="Division" className="p-2 border rounded text-sm" value={regData.division} onChange={e=>setRegData({...regData, division: e.target.value})} />
-                            <input type="text" placeholder="Location" className="p-2 border rounded text-sm" value={regData.locationName} onChange={e=>setRegData({...regData, locationName: e.target.value})} />
-                            <input type="text" placeholder="Sublocation" className="p-2 border rounded text-sm" value={regData.sublocation} onChange={e=>setRegData({...regData, sublocation: e.target.value})} />
-                            <input type="text" placeholder="Village" className="p-2 border rounded text-sm" value={regData.village} onChange={e=>setRegData({...regData, village: e.target.value})} />
-                        </div>
-                        <select className="w-full p-2 border rounded text-sm" value={regData.role} onChange={e=>setRegData({...regData, role: e.target.value as UserRole})}>
-                            <option value={UserRole.FARMER}>Farmer</option>
-                            <option value={UserRole.BUTCHERY}>Butchery</option>
-                            <option value={UserRole.MARKET_AGENT}>Market Agent</option>
-                            <option value={UserRole.AUTHORITY}>Authority</option>
-                        </select>
-                    </div>
-                )}
-
-                <Button type="submit" className="w-full mt-4">{isLogin ? "Login" : "Register"}</Button>
-            </form>
-            <p className="text-center text-sm text-primary mt-4 cursor-pointer" onClick={()=>setIsLogin(!isLogin)}>
-                {isLogin ? "Create an account" : "Back to Login"}
-            </p>
         </div>
+        <h1 className="text-3xl font-bold text-slate-900 text-center mb-2">Cattle Tracker</h1>
+        <p className="text-slate-500 text-center mb-8">
+            {isRegistering ? "Create your account" : "Secure Login"}
+        </p>
+        
+        {isRegistering ? (
+            <form onSubmit={handleRegister} className="space-y-4 max-h-[60vh] overflow-y-auto no-scrollbar">
+                <div>
+                    <label className="block text-xs font-bold text-slate-600 mb-1">Full Name</label>
+                    <input required type="text" className="w-full p-2 border rounded" value={regData.name} onChange={e => setRegData({...regData, name: e.target.value})} />
+                </div>
+                <div>
+                    <label className="block text-xs font-bold text-slate-600 mb-1">Phone Number</label>
+                    <input required type="tel" className="w-full p-2 border rounded" value={regData.phoneNumber} onChange={e => setRegData({...regData, phoneNumber: e.target.value})} />
+                </div>
+                <div>
+                    <label className="block text-xs font-bold text-slate-600 mb-1">Password</label>
+                    <input required type="password" className="w-full p-2 border rounded" value={regData.password} onChange={e => setRegData({...regData, password: e.target.value})} />
+                </div>
+                
+                <div className="grid grid-cols-2 gap-2">
+                    <div>
+                        <label className="block text-xs font-bold text-slate-600 mb-1">County</label>
+                        <input required type="text" className="w-full p-2 border rounded" value={regData.county} onChange={e => setRegData({...regData, county: e.target.value})} />
+                    </div>
+                     <div>
+                        <label className="block text-xs font-bold text-slate-600 mb-1">District</label>
+                        <input required type="text" className="w-full p-2 border rounded" value={regData.district} onChange={e => setRegData({...regData, district: e.target.value})} />
+                    </div>
+                </div>
+
+                <div className="grid grid-cols-2 gap-2">
+                    <div>
+                        <label className="block text-xs font-bold text-slate-600 mb-1">Division</label>
+                        <input required type="text" className="w-full p-2 border rounded" value={regData.division} onChange={e => setRegData({...regData, division: e.target.value})} />
+                    </div>
+                     <div>
+                        <label className="block text-xs font-bold text-slate-600 mb-1">Location</label>
+                        <input required type="text" className="w-full p-2 border rounded" value={regData.locationName} onChange={e => setRegData({...regData, locationName: e.target.value})} />
+                    </div>
+                </div>
+
+                <div className="grid grid-cols-2 gap-2">
+                    <div>
+                        <label className="block text-xs font-bold text-slate-600 mb-1">Sub-Location</label>
+                        <input required type="text" className="w-full p-2 border rounded" value={regData.sublocation} onChange={e => setRegData({...regData, sublocation: e.target.value})} />
+                    </div>
+                     <div>
+                        <label className="block text-xs font-bold text-slate-600 mb-1">Village</label>
+                        <input required type="text" className="w-full p-2 border rounded" value={regData.village} onChange={e => setRegData({...regData, village: e.target.value})} />
+                    </div>
+                </div>
+
+                <div>
+                    <label className="block text-xs font-bold text-slate-600 mb-1">Role</label>
+                    <select className="w-full p-2 border rounded" value={regData.role} onChange={e => setRegData({...regData, role: e.target.value as UserRole})}>
+                        <option value={UserRole.FARMER}>Farmer</option>
+                        <option value={UserRole.BUTCHERY}>Butchery</option>
+                        <option value={UserRole.AUTHORITY}>Authority</option>
+                        <option value={UserRole.MARKET_AGENT}>Market Agent</option>
+                    </select>
+                </div>
+
+                <Button type="submit" className="w-full" disabled={loading}>
+                    {loading ? 'Registering...' : 'Register Account'}
+                </Button>
+                
+                <p className="text-center text-sm text-slate-500 mt-2">
+                    Already have an account? <span onClick={() => setIsRegistering(false)} className="text-primary font-bold cursor-pointer">Login</span>
+                </p>
+            </form>
+        ) : (
+            <form onSubmit={handleLogin} className="space-y-4">
+                <div className="relative">
+                    <UserIcon className="absolute left-3 top-3 w-5 h-5 text-slate-400" />
+                    <input 
+                        type="tel" 
+                        required
+                        placeholder="Phone Number" 
+                        className="w-full pl-10 pr-4 py-3 rounded-lg border border-slate-200 focus:border-primary focus:ring-1 focus:ring-primary outline-none"
+                        value={phone}
+                        onChange={(e) => setPhone(e.target.value)}
+                    />
+                </div>
+                 <div className="relative">
+                    <Lock className="absolute left-3 top-3 w-5 h-5 text-slate-400" />
+                    <input 
+                        type="password" 
+                        required
+                        placeholder="Password" 
+                        className="w-full pl-10 pr-4 py-3 rounded-lg border border-slate-200 focus:border-primary focus:ring-1 focus:ring-primary outline-none"
+                        value={password}
+                        onChange={(e) => setPassword(e.target.value)}
+                    />
+                </div>
+                
+                <Button type="submit" className="w-full py-3" disabled={loading}>
+                    {loading ? 'Authenticating...' : 'Login'}
+                </Button>
+
+                <p className="text-center text-sm text-slate-500 mt-4">
+                    New user? <span onClick={() => setIsRegistering(true)} className="text-primary font-bold cursor-pointer">Create Account</span>
+                </p>
+                <div className="mt-8 p-3 bg-blue-50 text-blue-700 rounded text-xs text-center">
+                    <p className="font-bold">Demo Credentials:</p>
+                    <p>Phone: 0712345678 / Pass: 123 (Farmer)</p>
+                    <p>Phone: 0722222222 / Pass: 123 (Butchery)</p>
+                </div>
+            </form>
+        )}
+      </div>
     </div>
   );
 };
 
-// --- ANIMAL REGISTRATION (3 PHOTOS) ---
 const RegisterAnimalView: React.FC<{ onCancel: () => void }> = ({ onCancel }) => {
-    const { registerAnimal, currentUser } = useStore();
-    const [step, setStep] = useState(1);
-    const [loading, setLoading] = useState(false);
-    const [data, setData] = useState<Partial<Animal>>({ species: 'Cattle', serialNumber: `CAT-${Date.now()}` });
-    const [photos, setPhotos] = useState({ front: '', left: '', right: '' });
+  const { registerAnimal, currentUser } = useStore();
+  const [loading, setLoading] = useState(false);
+  const [step, setStep] = useState(1);
+  const [formData, setFormData] = useState<Partial<Animal>>({
+    species: 'Cattle',
+    serialNumber: `CAT-${Date.now()}`
+  });
+  const [imagePreview, setImagePreview] = useState<string | null>(null);
 
-    const handlePhoto = async (side: 'front' | 'left' | 'right', file: File) => {
-        setLoading(true);
-        try {
-            // Automatically compress image to avoid "Image too large" errors and save storage
-            const compressedBase64 = await compressImage(file);
-            setPhotos(prev => ({...prev, [side]: compressedBase64}));
-            
-            // Generate description using the compressed image (left side only for demo)
-            if(side === 'left') {
-                const desc = await generateAnimalDescription(compressedBase64, data.species || 'Animal');
-                setData(prev => ({...prev, description: desc}));
-            }
-        } catch (e) {
-            console.error("Image processing error", e);
-            alert("Failed to process image. Please try another one.");
-        } finally {
-            setLoading(false);
-        }
+  const handleImageUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+
+    const reader = new FileReader();
+    reader.onloadend = async () => {
+      const base64 = reader.result as string;
+      setImagePreview(base64);
+      setLoading(true);
+      const desc = await generateAnimalDescription(base64, formData.species || 'Animal');
+      setFormData(prev => ({ ...prev, description: desc, photoUrl: base64 }));
+      setLoading(false);
     };
+    reader.readAsDataURL(file);
+  };
 
-    const finalize = (hash: string) => {
-        if(!currentUser || !data.species) return;
-        registerAnimal({
-            id: Date.now().toString(), ownerId: currentUser.id, status: AnimalStatus.ACTIVE,
-            species: data.species, serialNumber: data.serialNumber!, description: data.description || '',
-            photos: photos as any, biometricHash: hash, registeredDate: new Date().toISOString(), transferHistory: []
-        });
-        // Delay onCancel slightly to ensure state update propagates
-        setTimeout(() => onCancel(), 100);
-    };
+  const handleScanComplete = (hash: string) => {
+    setFormData(prev => ({ ...prev, biometricHash: hash }));
+    // Automatically move to final step or submit
+    handleSubmit(hash);
+  };
 
-    return (
-        <div className="p-4 space-y-6 pb-24">
-            <div className="flex justify-between items-center"><h2 className="text-xl font-bold">Register Animal</h2><Button variant="outline" onClick={onCancel}><X className="w-4 h-4"/></Button></div>
-            {step === 1 && (
-                <div className="space-y-4">
-                    <select className="w-full p-3 border rounded" value={data.species} onChange={e=>setData({...data, species: e.target.value as any})}>
-                        <option value="Cattle">Cattle</option><option value="Goat">Goat</option><option value="Sheep">Sheep</option><option value="Pig">Pig</option><option value="Camel">Camel</option>
-                    </select>
-                    <div className="grid grid-cols-3 gap-2">
-                        {['left', 'right', 'front'].map(side => (
-                            <div key={side} className="border-2 border-dashed rounded h-24 flex items-center justify-center relative bg-slate-50 overflow-hidden">
-                                {photos[side as keyof typeof photos] ? (
-                                    <img src={photos[side as keyof typeof photos]} className="w-full h-full object-cover" />
-                                ) : (
-                                    <span className="text-xs text-slate-400 capitalize">{side}</span>
-                                )}
-                                <input type="file" accept="image/*" className="absolute inset-0 opacity-0" onChange={e => e.target.files && handlePhoto(side as any, e.target.files[0])} />
-                            </div>
-                        ))}
-                    </div>
-                    {loading && <p className="text-center text-xs text-primary animate-pulse">Processing Image...</p>}
-                    <textarea className="w-full p-2 border rounded text-sm" placeholder="Description" value={data.description} onChange={e=>setData({...data, description: e.target.value})} rows={3} />
-                    <Button className="w-full" disabled={!photos.left || !photos.right || !photos.front || loading} onClick={()=>setStep(2)}>Next: Biometrics</Button>
-                </div>
-            )}
-            {step === 2 && <BiometricScanner onScanComplete={finalize} />}
-        </div>
-    );
-};
+  const handleSubmit = (biometricHash?: string) => {
+    const finalHash = biometricHash || formData.biometricHash;
+    if (!formData.species || !formData.description || !currentUser || !finalHash) return;
+    
+    registerAnimal({
+      id: Date.now().toString(),
+      ownerId: currentUser.id,
+      status: AnimalStatus.ACTIVE,
+      transferHistory: [],
+      registeredDate: new Date().toISOString(),
+      photoUrl: imagePreview || 'https://picsum.photos/300/200',
+      serialNumber: formData.serialNumber!,
+      species: formData.species as any,
+      description: formData.description,
+      biometricHash: finalHash
+    });
+    onCancel();
+  };
 
-// --- BUYER SEARCH MODAL ---
-const TransferModal: React.FC<{ animalId: string, onClose: () => void }> = ({ animalId, onClose }) => {
-    const { users, currentUser, initiateTransfer } = useStore();
-    const [search, setSearch] = useState('');
-    const buyers = users.filter(u => u.id !== currentUser?.id && (u.name.toLowerCase().includes(search.toLowerCase()) || u.registrationNumber.includes(search)));
+  return (
+    <div className="p-4 space-y-6">
+      <div className="flex items-center gap-2 mb-4">
+        <Button variant="outline" onClick={onCancel} className="p-2"><X className="w-4 h-4" /></Button>
+        <h2 className="text-xl font-bold">Register New Animal</h2>
+      </div>
 
-    return (
-        <div className="fixed inset-0 bg-black/50 z-50 flex items-center justify-center p-4">
-            <div className="bg-white w-full max-w-sm rounded-xl p-4 h-[70vh] flex flex-col">
-                <div className="flex justify-between mb-4"><h3 className="font-bold">Select Buyer</h3><Button variant="outline" onClick={onClose}><X className="w-4 h-4"/></Button></div>
-                <input placeholder="Search Name or Reg No..." className="w-full p-2 border rounded mb-4" value={search} onChange={e=>setSearch(e.target.value)} />
-                <div className="overflow-y-auto flex-1 space-y-2">
-                    {buyers.map(u => (
-                        <div key={u.id} className="p-3 border rounded flex justify-between items-center">
-                            <div><p className="font-bold text-sm">{u.name}</p><p className="text-xs text-slate-500">{u.registrationNumber}</p></div>
-                            <Button className="text-xs" onClick={()=>{initiateTransfer(animalId, u.id); onClose(); alert("Request Sent!");}}>Select</Button>
-                        </div>
-                    ))}
-                </div>
-            </div>
-        </div>
-    );
-};
-
-// --- MARKET AGENT VIEW ---
-const MarketView: React.FC = () => {
-    const { findAnimalByHash, users } = useStore();
-    const [scanned, setScanned] = useState<Animal | null>(null);
-
-    return (
-        <div className="p-4 space-y-6 pb-24">
-            <h1 className="text-2xl font-bold">Market Check-In</h1>
-            {!scanned ? (
-                <BiometricScanner mode="IDENTIFY" onScanComplete={hash => {
-                    const animal = findAnimalByHash(hash);
-                    if(animal) setScanned(animal);
-                    else alert("Animal Not Found in Registry");
-                }} />
+      {step === 1 && (
+        <div className="space-y-4">
+           <div>
+            <label className="block text-sm font-medium mb-1">Species</label>
+            <select 
+              className="w-full p-3 border rounded-lg bg-white"
+              value={formData.species}
+              onChange={(e) => setFormData({...formData, species: e.target.value as any})}
+            >
+              <option value="Cattle">Cattle</option>
+              <option value="Goat">Goat</option>
+              <option value="Sheep">Sheep</option>
+              <option value="Pig">Pig</option>
+              <option value="Camel">Camel</option>
+            </select>
+          </div>
+          
+          <div className="border-2 border-dashed border-slate-300 rounded-xl p-6 text-center">
+            {imagePreview ? (
+              <img src={imagePreview} alt="Preview" className="mx-auto h-48 rounded-lg object-cover mb-4" />
             ) : (
-                <Card className="border-l-4 border-green-500">
-                    <div className="flex gap-4">
-                        <img src={scanned.photos?.left || 'https://picsum.photos/200'} className="w-24 h-24 object-cover rounded" />
-                        <div>
-                            <h3 className="font-bold">{scanned.serialNumber}</h3>
-                            <Badge status={scanned.status} />
-                            <p className="text-sm mt-1">{scanned.description}</p>
-                        </div>
-                    </div>
-                    <div className="mt-4 pt-4 border-t">
-                        <p className="text-xs font-bold uppercase text-slate-500">Current Owner</p>
-                        <p>{users.find(u => u.id === scanned.ownerId)?.name || 'Unknown'}</p>
-                    </div>
-                    {scanned.status === AnimalStatus.STOLEN && <div className="bg-red-600 text-white p-2 text-center mt-4 rounded font-bold animate-pulse">STOP! STOLEN ANIMAL</div>}
-                    <Button onClick={()=>setScanned(null)} className="w-full mt-4">Scan Next</Button>
-                </Card>
+              <div className="flex flex-col items-center py-4">
+                <Camera className="w-12 h-12 text-slate-400 mb-2" />
+                <p className="text-sm text-slate-500">Upload Photo (Left Side)</p>
+              </div>
             )}
-        </div>
-    );
-};
+            <input type="file" accept="image/*" onChange={handleImageUpload} className="block w-full text-sm text-slate-500 file:mr-4 file:py-2 file:px-4 file:rounded-full file:border-0 file:text-sm file:font-semibold file:bg-primary file:text-white hover:file:bg-emerald-700"/>
+          </div>
 
-// --- DASHBOARDS ---
+          {loading && <p className="text-center text-primary animate-pulse">AI is analyzing image...</p>}
+          
+          {formData.description && (
+            <div className="bg-slate-50 p-4 rounded-lg">
+              <h3 className="text-xs font-bold uppercase text-slate-400 mb-1">AI Description</h3>
+              <p className="text-sm">{formData.description}</p>
+            </div>
+          )}
+
+          <Button 
+            className="w-full" 
+            disabled={!formData.description || loading}
+            onClick={() => setStep(2)}
+          >
+            Next: Biometric Scan
+          </Button>
+        </div>
+      )}
+
+      {step === 2 && (
+        <div className="space-y-4">
+           <div className="bg-blue-50 border-l-4 border-blue-500 p-4 mb-4">
+             <div className="flex items-center gap-2">
+               <Eye className="w-5 h-5 text-blue-600" />
+               <p className="text-sm text-blue-800 font-bold">Mandatory Iris Scan</p>
+             </div>
+             <p className="text-xs text-blue-600 mt-1">Every animal must be biometrically scanned to prevent theft and ensure ownership.</p>
+           </div>
+           
+           <BiometricScanner onScanComplete={handleScanComplete} />
+        </div>
+      )}
+    </div>
+  );
+};
 
 const FarmerDashboard: React.FC = () => {
-    const { currentUser, animals, reportStolen, recoverAnimal, markDead, homeSlaughter } = useStore();
-    const [view, setView] = useState('LIST');
-    const [sellId, setSellId] = useState<string | null>(null);
-    const myAnimals = animals.filter(a => a.ownerId === currentUser?.id);
+  const { currentUser, animals, reportStolen, initiateTransfer, markDead, homeSlaughter } = useStore();
+  const [view, setView] = useState<'LIST' | 'REGISTER'>('LIST');
+  const [search, setSearch] = useState('');
 
-    if(view === 'REGISTER') return <RegisterAnimalView onCancel={()=>setView('LIST')} />;
+  const myAnimals = animals.filter(a => a.ownerId === currentUser?.id);
 
-    return (
-        <div className="space-y-6 p-4 pb-24">
-            <div className="flex justify-between items-center">
-                <div><h1 className="text-xl font-bold">My Stock</h1><p className="text-xs text-slate-500">{currentUser?.location.village}</p></div>
-                <Button onClick={()=>setView('REGISTER')}><PlusCircle className="w-4 h-4"/> Add</Button>
+  if (view === 'REGISTER') return <RegisterAnimalView onCancel={() => setView('LIST')} />;
+
+  return (
+    <div className="space-y-6 pb-20">
+      <header className="flex justify-between items-center p-4 bg-white sticky top-0 z-10 shadow-sm">
+        <div>
+          <h1 className="text-xl font-bold text-slate-900">My Livestock</h1>
+          <p className="text-xs text-slate-500">{currentUser?.location.village}, {currentUser?.location.county}</p>
+        </div>
+        <Button onClick={() => setView('REGISTER')} className="rounded-full w-10 h-10 p-0"><PlusCircle /></Button>
+      </header>
+
+      <div className="px-4">
+        <div className="relative mb-4">
+          <Search className="absolute left-3 top-3 w-4 h-4 text-slate-400" />
+          <input 
+            type="text" 
+            placeholder="Search serial number..." 
+            className="w-full pl-10 pr-4 py-2 rounded-lg border border-slate-200 focus:outline-none focus:border-primary"
+            value={search}
+            onChange={(e) => setSearch(e.target.value)}
+          />
+        </div>
+
+        <div className="space-y-4">
+          {myAnimals.length === 0 ? (
+            <div className="text-center py-10 text-slate-400">
+              <p>No animals registered yet.</p>
             </div>
-            <div className="space-y-4">
-                {myAnimals.map(a => (
-                    <Card key={a.id}>
-                        <div className="flex gap-3 mb-3">
-                            <img src={a.photos?.left || 'https://picsum.photos/200'} className="w-20 h-20 rounded object-cover" />
-                            <div><h3 className="font-bold">{a.serialNumber}</h3><Badge status={a.status} /><p className="text-xs text-slate-500">{a.species}</p></div>
+          ) : (
+            myAnimals
+              .filter(a => a.serialNumber.toLowerCase().includes(search.toLowerCase()))
+              .map(animal => (
+              <Card key={animal.id} className="flex flex-col gap-3">
+                <div className="flex gap-4">
+                  <img src={animal.photoUrl} alt="Animal" className="w-20 h-20 rounded-lg object-cover bg-slate-100" />
+                  <div className="flex-1">
+                    <div className="flex justify-between items-start">
+                      <h3 className="font-bold text-slate-800">{animal.serialNumber}</h3>
+                      <Badge status={animal.status} />
+                    </div>
+                    <p className="text-sm text-slate-500">{animal.species}</p>
+                    <p className="text-xs text-slate-400 mt-1 line-clamp-2">{animal.description}</p>
+                    {animal.biometricHash && (
+                        <div className="flex items-center gap-1 mt-1">
+                            <CheckCircle className="w-3 h-3 text-green-500" />
+                            <span className="text-[10px] text-slate-400">Biometric Verified</span>
                         </div>
-                        {a.status === AnimalStatus.ACTIVE && (
-                            <div className="grid grid-cols-4 gap-2 pt-2 border-t">
-                                <button onClick={()=>setSellId(a.id)} className="flex flex-col items-center gap-1 text-[10px]"><ShoppingBag className="w-5 h-5 text-blue-500"/>Sell</button>
-                                <button onClick={()=>confirm("Home Slaughter?") && homeSlaughter(a.id)} className="flex flex-col items-center gap-1 text-[10px]"><Utensils className="w-5 h-5 text-orange-500"/>Eat</button>
-                                <button onClick={()=>confirm("Dead?") && markDead(a.id)} className="flex flex-col items-center gap-1 text-[10px]"><Skull className="w-5 h-5 text-slate-500"/>Dead</button>
-                                <button onClick={()=>confirm("Report Stolen?") && reportStolen(a.id)} className="flex flex-col items-center gap-1 text-[10px]"><ShieldAlert className="w-5 h-5 text-red-500"/>Stolen</button>
-                            </div>
-                        )}
-                        {a.status === AnimalStatus.STOLEN && (
-                            <div className="mt-2 pt-2 border-t border-red-100">
-                                <div className="bg-red-50 p-2 rounded-lg mb-2">
-                                    <p className="text-xs text-red-700 flex items-center gap-1 font-bold">
-                                        <ShieldAlert className="w-3 h-3" />
-                                        Reported Stolen - Authorities Notified
-                                    </p>
-                                </div>
-                                <Button 
-                                    variant="primary" 
-                                    className="w-full py-2 text-xs"
-                                    onClick={() => {
-                                        if(confirm('Confirm recovery? This will return the animal to ACTIVE status and resolve alerts.')) {
-                                            recoverAnimal(a.id);
-                                        }
-                                    }}
-                                >
-                                    <CheckCircle className="w-4 h-4" />
-                                    Report Recovered & Return to Stock
-                                </Button>
-                            </div>
-                        )}
-                    </Card>
-                ))}
-            </div>
-            {sellId && <TransferModal animalId={sellId} onClose={()=>setSellId(null)} />}
+                    )}
+                  </div>
+                </div>
+                
+                {animal.status === AnimalStatus.ACTIVE && (
+                  <div className="grid grid-cols-4 gap-2 mt-2 pt-2 border-t border-slate-100">
+                    <button 
+                        onClick={() => initiateTransfer(animal.id, 'buyer-id')}
+                        className="flex flex-col items-center justify-center gap-1 p-2 rounded-lg hover:bg-slate-50 text-slate-600"
+                    >
+                        <ShoppingBag className="w-5 h-5 text-blue-500" />
+                        <span className="text-[10px] font-medium">Sell</span>
+                    </button>
+                    
+                    <button 
+                        onClick={() => {
+                             if(confirm('Confirm Home Slaughter? This will remove the animal from active stock.')) {
+                                 homeSlaughter(animal.id);
+                             }
+                        }}
+                        className="flex flex-col items-center justify-center gap-1 p-2 rounded-lg hover:bg-slate-50 text-slate-600"
+                    >
+                        <Utensils className="w-5 h-5 text-orange-500" />
+                        <span className="text-[10px] font-medium">Slaughter</span>
+                    </button>
+
+                     <button 
+                        onClick={() => {
+                             if(confirm('Mark animal as Dead? This is permanent.')) {
+                                 markDead(animal.id);
+                             }
+                        }}
+                        className="flex flex-col items-center justify-center gap-1 p-2 rounded-lg hover:bg-slate-50 text-slate-600"
+                    >
+                        <Skull className="w-5 h-5 text-slate-500" />
+                        <span className="text-[10px] font-medium">Dead</span>
+                    </button>
+
+                    <button 
+                         onClick={() => {
+                            if(confirm('Are you sure you want to report this animal as STOLEN? This will alert authorities.')) {
+                                reportStolen(animal.id);
+                            }
+                        }}
+                        className="flex flex-col items-center justify-center gap-1 p-2 rounded-lg hover:bg-red-50 text-slate-600"
+                    >
+                        <ShieldAlert className="w-5 h-5 text-red-500" />
+                        <span className="text-[10px] font-medium text-red-600">Stolen</span>
+                    </button>
+                  </div>
+                )}
+              </Card>
+            ))
+          )}
         </div>
-    );
-};
-
-const ButcheryDashboard: React.FC = () => {
-    const { animals, currentUser, logSlaughter, transferToButchery } = useStore();
-    const [activeTab, setActiveTab] = useState<'SLAUGHTER' | 'TRANSFER'>('SLAUGHTER');
-    const [formData, setFormData] = useState({ animalId: '', live: 0, dead: 0, sold: 0 });
-    const stock = animals.filter(a => a.ownerId === currentUser?.id && a.status === AnimalStatus.ACTIVE);
-
-    const handleSlaughter = () => {
-        logSlaughter({ id: Date.now().toString(), animalId: formData.animalId, butcheryId: currentUser!.id, liveWeight: formData.live, deadWeight: formData.dead, meatSold: formData.sold, date: new Date().toISOString() });
-        alert("Logged!"); setFormData({ animalId: '', live: 0, dead: 0, sold: 0 });
-    };
-
-    return (
-        <div className="p-4 space-y-6 pb-24">
-            <h1 className="text-2xl font-bold">Butchery Panel</h1>
-            <div className="flex gap-2"><Button onClick={()=>setActiveTab('SLAUGHTER')} variant={activeTab==='SLAUGHTER'?'primary':'outline'} className="flex-1">Log Slaughter</Button><Button onClick={()=>setActiveTab('TRANSFER')} variant={activeTab==='TRANSFER'?'primary':'outline'} className="flex-1">Transfer Stock</Button></div>
-            
-            {activeTab === 'SLAUGHTER' ? (
-                <Card className="space-y-4">
-                    <select className="w-full p-2 border rounded" value={formData.animalId} onChange={e=>setFormData({...formData, animalId: e.target.value})}>
-                        <option value="">Select Animal</option>{stock.map(a=><option key={a.id} value={a.id}>{a.serialNumber}</option>)}
-                    </select>
-                    <div className="grid grid-cols-2 gap-4"><input type="number" placeholder="Live Kg" className="p-2 border rounded" onChange={e=>setFormData({...formData, live: +e.target.value})} /><input type="number" placeholder="Dead Kg" className="p-2 border rounded" onChange={e=>setFormData({...formData, dead: +e.target.value})} /></div>
-                    <input type="number" placeholder="Sold Kg" className="w-full p-2 border rounded" onChange={e=>setFormData({...formData, sold: +e.target.value})} />
-                    <Button className="w-full" onClick={handleSlaughter}>Confirm</Button>
-                </Card>
-            ) : (
-                 <div className="text-center p-10 text-slate-400">Butchery-to-Butchery Transfer Module Active</div>
-            )}
-        </div>
-    );
+      </div>
+    </div>
+  );
 };
 
 const AuthorityDashboard: React.FC = () => {
-    const { alerts, animals } = useStore();
-    // Filter alerts to only show unresolved or important ones if desired, or show all with status
-    const activeAlerts = alerts.filter(a => !a.resolved);
-    
-    const data = [{name: 'Active', value: animals.filter(a=>a.status==='ACTIVE').length}, {name: 'Stolen', value: animals.filter(a=>a.status==='STOLEN').length}];
-    return (
-        <div className="p-4 space-y-6 pb-24">
-            <h1 className="text-2xl font-bold">Authority HQ</h1>
-            <div className="h-48"><ResponsiveContainer><PieChart><Pie data={data} dataKey="value" outerRadius={60} fill="#059669" label /><Tooltip/></PieChart></ResponsiveContainer></div>
-            <h3 className="font-bold">Active Alerts (County Wide)</h3>
-            {activeAlerts.length === 0 ? <p className="text-slate-400 text-sm">No active alerts.</p> : activeAlerts.map(a => (
-                <div key={a.id} className="p-3 border-l-4 border-red-500 bg-white shadow mb-2">
-                    <p className="font-bold">{a.type.replace('_', ' ')}</p>
-                    <p className="text-xs">{a.details}</p>
-                    <p className="text-[10px] text-slate-400 mt-1">{new Date(a.timestamp).toLocaleString()}</p>
+  const { alerts, animals, users } = useStore();
+  const [riskAnalysis, setRiskAnalysis] = useState<string | null>(null);
+
+  // Generate stats
+  const stolenCount = animals.filter(a => a.status === AnimalStatus.STOLEN).length;
+  const activeCount = animals.filter(a => a.status === AnimalStatus.ACTIVE).length;
+  
+  const data = [
+    { name: 'Active', value: activeCount },
+    { name: 'Sold', value: animals.filter(a => a.status === AnimalStatus.SOLD).length },
+    { name: 'Stolen', value: stolenCount },
+    { name: 'Slaughtered', value: animals.filter(a => a.status === AnimalStatus.SLAUGHTERED).length },
+  ];
+  const COLORS = ['#059669', '#3b82f6', '#dc2626', '#64748b'];
+
+  const handleAnalyzeRisk = async () => {
+      setRiskAnalysis("Analyzing...");
+      const analysis = await analyzeTheftRisk(stolenCount, "County Wide");
+      setRiskAnalysis(analysis);
+  }
+
+  return (
+    <div className="space-y-6 p-4 pb-20">
+      <header>
+        <h1 className="text-2xl font-bold text-slate-900">Authority HQ</h1>
+        <p className="text-slate-500">Monitoring & Theft Prevention</p>
+      </header>
+
+      <div className="grid grid-cols-2 gap-4">
+        <Card className="bg-red-50 border-red-100">
+          <h3 className="text-red-800 text-xs font-bold uppercase">Stolen Alerts</h3>
+          <p className="text-3xl font-bold text-red-600">{alerts.filter(a => a.type === 'STOLEN').length}</p>
+        </Card>
+        <Card className="bg-blue-50 border-blue-100">
+          <h3 className="text-blue-800 text-xs font-bold uppercase">Total Animals</h3>
+          <p className="text-3xl font-bold text-blue-600">{animals.length}</p>
+        </Card>
+      </div>
+
+      <Card>
+        <h3 className="font-bold mb-4">Livestock Status Distribution</h3>
+        <div className="h-48 w-full">
+            <ResponsiveContainer width="100%" height="100%">
+            <PieChart>
+                <Pie data={data} innerRadius={40} outerRadius={70} paddingAngle={5} dataKey="value">
+                {data.map((entry, index) => (
+                    <Cell key={`cell-${index}`} fill={COLORS[index % COLORS.length]} />
+                ))}
+                </Pie>
+                <Tooltip />
+            </PieChart>
+            </ResponsiveContainer>
+        </div>
+        <div className="flex justify-center gap-4 text-xs">
+            {data.map((d, i) => (
+                <div key={i} className="flex items-center gap-1">
+                    <div className="w-2 h-2 rounded-full" style={{backgroundColor: COLORS[i]}}></div>
+                    <span>{d.name}</span>
                 </div>
             ))}
         </div>
-    );
+      </Card>
+
+      <Card>
+          <div className="flex justify-between items-center mb-2">
+            <h3 className="font-bold">AI Theft Risk Analysis</h3>
+            <Button variant="outline" className="text-xs py-1 px-2" onClick={handleAnalyzeRisk}>Analyze</Button>
+          </div>
+          {riskAnalysis ? (
+              <p className="text-sm text-slate-600 italic">{riskAnalysis}</p>
+          ) : (
+              <p className="text-sm text-slate-400">Click analyze to generate insights using Gemini.</p>
+          )}
+      </Card>
+
+      <div>
+        <h3 className="font-bold text-slate-700 mb-3">Recent Alerts</h3>
+        <div className="space-y-3">
+          {alerts.length === 0 ? <p className="text-slate-400 text-sm">No active alerts.</p> : alerts.map(alert => (
+            <div key={alert.id} className="bg-white p-3 rounded-lg border-l-4 border-red-500 shadow-sm flex items-start gap-3">
+              <ShieldAlert className="w-5 h-5 text-red-500 shrink-0 mt-1" />
+              <div>
+                <p className="text-sm font-bold text-slate-800">{alert.type.replace('_', ' ')}</p>
+                <p className="text-xs text-slate-600">{alert.details}</p>
+                <p className="text-[10px] text-slate-400 mt-1">{new Date(alert.timestamp).toLocaleTimeString()}</p>
+              </div>
+            </div>
+          ))}
+        </div>
+      </div>
+    </div>
+  );
 };
 
-// --- APP ROOT ---
-const AppContent: React.FC = () => {
-    const { currentUser, logout, transferRequests, acceptTransfer, rejectTransfer, users, animals } = useStore();
-    const [notifOpen, setNotifOpen] = useState(false);
+const ButcheryDashboard: React.FC = () => {
+    const { animals, currentUser, logSlaughter, users, transferToButchery } = useStore();
+    const [selectedAnimalId, setSelectedAnimalId] = useState('');
+    const [weights, setWeights] = useState({ live: 0, dead: 0, sold: 0 });
+    const [mode, setMode] = useState<'SLAUGHTER' | 'TRANSFER'>('SLAUGHTER');
     
-    if(!currentUser) return <AuthView />;
+    // Transfer State
+    const [transferData, setTransferData] = useState({ animalId: '', targetButcheryId: '', weight: 0 });
 
-    const myRequests = transferRequests.filter(r => r.toUserId === currentUser.id && r.status === 'PENDING');
+    const ownedAnimals = animals.filter(a => a.ownerId === currentUser?.id && a.status === AnimalStatus.ACTIVE);
+    const otherButcheries = users.filter(u => u.role === UserRole.BUTCHERY && u.id !== currentUser?.id);
 
-    if(notifOpen) return (
-        <div className="p-4 space-y-4 pb-24">
-            <div className="flex justify-between"><h2 className="font-bold">Notifications</h2><Button variant="outline" onClick={()=>setNotifOpen(false)}><X className="w-4 h-4"/></Button></div>
-            {myRequests.map(req => {
-                const seller = users.find(u => u.id === req.fromUserId);
-                const animal = animals.find(a => a.id === req.animalId);
-                return (
-                    <Card key={req.id}>
-                        <p className="text-sm mb-2"><span className="font-bold">{seller?.name}</span> wants to sell you <span className="font-bold">{animal?.species}</span>.</p>
-                        <div className="flex gap-2"><Button className="flex-1 text-xs" onClick={()=>acceptTransfer(req.id)}>Accept</Button><Button variant="danger" className="flex-1 text-xs" onClick={()=>rejectTransfer(req.id)}>Reject</Button></div>
-                    </Card>
-                )
-            })}
-            {myRequests.length === 0 && <p className="text-center text-slate-400">No new notifications.</p>}
-        </div>
-    );
+    const handleSlaughter = () => {
+        if (!selectedAnimalId || !currentUser) return;
+        logSlaughter({
+            id: Date.now().toString(),
+            animalId: selectedAnimalId,
+            butcheryId: currentUser.id,
+            liveWeight: weights.live,
+            deadWeight: weights.dead,
+            meatSold: weights.sold,
+            date: new Date().toISOString()
+        });
+        setSelectedAnimalId('');
+        setWeights({ live: 0, dead: 0, sold: 0 });
+        alert("Slaughter recorded successfully.");
+    };
+
+    const handleTransfer = () => {
+      if(!currentUser || !transferData.animalId || !transferData.targetButcheryId) return;
+      
+      transferToButchery(transferData.animalId, currentUser.id, transferData.targetButcheryId, transferData.weight);
+      alert("Transferred successfully!");
+      setTransferData({ animalId: '', targetButcheryId: '', weight: 0 });
+    };
 
     return (
-        <div className="min-h-screen bg-slate-50 text-slate-900 font-sans relative">
-            <main className="max-w-md mx-auto min-h-screen bg-white shadow-2xl overflow-y-auto relative">
-                {currentUser.role === UserRole.FARMER && <FarmerDashboard />}
-                {currentUser.role === UserRole.BUTCHERY && <ButcheryDashboard />}
-                {currentUser.role === UserRole.AUTHORITY && <AuthorityDashboard />}
-                {currentUser.role === UserRole.MARKET_AGENT && <MarketView />}
+        <div className="p-4 space-y-6 pb-20">
+            <header>
+                <h1 className="text-2xl font-bold">Butchery Panel</h1>
+                <p className="text-slate-500">Log Slaughters & Transfers</p>
+            </header>
 
-                <nav className="fixed bottom-0 left-0 right-0 bg-white border-t py-3 px-6 flex justify-between z-50 max-w-md mx-auto">
-                    <button className="text-primary flex flex-col items-center gap-1"><UserIcon className="w-6 h-6"/><span className="text-[10px]">Home</span></button>
-                    <button className="text-slate-400 flex flex-col items-center gap-1 relative" onClick={()=>setNotifOpen(true)}>
-                        {myRequests.length > 0 && <div className="absolute -top-1 -right-1 w-2 h-2 bg-red-500 rounded-full animate-pulse"/>}
-                        <Bell className="w-6 h-6"/><span className="text-[10px]">Notify</span>
-                    </button>
-                    <button className="text-slate-400 flex flex-col items-center gap-1" onClick={logout}><LogOut className="w-6 h-6"/><span className="text-[10px]">Logout</span></button>
-                </nav>
-            </main>
+            <div className="flex gap-2">
+              <Button 
+                onClick={() => setMode('SLAUGHTER')} 
+                variant={mode === 'SLAUGHTER' ? 'primary' : 'outline'}
+                className="flex-1"
+              >
+                Slaughter
+              </Button>
+              <Button 
+                onClick={() => setMode('TRANSFER')} 
+                variant={mode === 'TRANSFER' ? 'primary' : 'outline'}
+                className="flex-1"
+              >
+                Transfer
+              </Button>
+            </div>
+
+            {mode === 'SLAUGHTER' ? (
+              <Card>
+                  <h3 className="font-bold mb-4 flex items-center gap-2">
+                      <Utensils className="w-4 h-4 text-accent" /> Log Slaughter
+                  </h3>
+                  <div className="space-y-4">
+                      <div>
+                          <label className="block text-sm font-medium mb-1">Select Animal (Stock)</label>
+                          <select 
+                              className="w-full p-2 border rounded-lg bg-slate-50"
+                              value={selectedAnimalId}
+                              onChange={(e) => setSelectedAnimalId(e.target.value)}
+                          >
+                              <option value="">-- Select Animal --</option>
+                              {ownedAnimals.map(a => (
+                                  <option key={a.id} value={a.id}>{a.serialNumber} - {a.species}</option>
+                              ))}
+                          </select>
+                          {ownedAnimals.length === 0 && <p className="text-xs text-red-500 mt-1">You must accept a transfer to have stock.</p>}
+                      </div>
+
+                      <div className="grid grid-cols-2 gap-4">
+                          <div>
+                              <label className="block text-xs font-medium text-slate-500">Live Weight (kg)</label>
+                              <input type="number" className="w-full p-2 border rounded" value={weights.live} onChange={e => setWeights({...weights, live: Number(e.target.value)})} />
+                          </div>
+                          <div>
+                              <label className="block text-xs font-medium text-slate-500">Dead Weight (kg)</label>
+                              <input type="number" className="w-full p-2 border rounded" value={weights.dead} onChange={e => setWeights({...weights, dead: Number(e.target.value)})} />
+                          </div>
+                      </div>
+                      
+                      <div>
+                          <label className="block text-xs font-medium text-slate-500">Sale Quantity (kg)</label>
+                          <input type="number" className="w-full p-2 border rounded" value={weights.sold} onChange={e => setWeights({...weights, sold: Number(e.target.value)})} />
+                      </div>
+
+                      {weights.sold > weights.dead && (
+                          <div className="bg-red-100 text-red-800 text-xs p-2 rounded flex items-center gap-2">
+                              <AlertTriangle className="w-4 h-4" />
+                              Warning: Sale weight exceeds dead weight. This will be flagged.
+                          </div>
+                      )}
+
+                      <Button className="w-full" onClick={handleSlaughter} disabled={!selectedAnimalId}>Confirm Slaughter</Button>
+                  </div>
+              </Card>
+            ) : (
+              <Card>
+                <h3 className="font-bold mb-4 flex items-center gap-2">
+                    <ArrowRightLeft className="w-4 h-4 text-accent" /> Butchery-to-Butchery Transfer
+                </h3>
+                <div className="space-y-4">
+                   <div>
+                        <label className="block text-sm font-medium mb-1">Select Animal</label>
+                        <select 
+                            className="w-full p-2 border rounded-lg bg-slate-50"
+                            value={transferData.animalId}
+                            onChange={(e) => setTransferData({...transferData, animalId: e.target.value})}
+                        >
+                            <option value="">-- Select Animal --</option>
+                            {ownedAnimals.map(a => (
+                                <option key={a.id} value={a.id}>{a.serialNumber} - {a.species}</option>
+                            ))}
+                        </select>
+                    </div>
+
+                    <div>
+                        <label className="block text-sm font-medium mb-1">Target Butchery</label>
+                        <select 
+                            className="w-full p-2 border rounded-lg bg-slate-50"
+                            value={transferData.targetButcheryId}
+                            onChange={(e) => setTransferData({...transferData, targetButcheryId: e.target.value})}
+                        >
+                            <option value="">-- Select Butchery --</option>
+                            {otherButcheries.map(u => (
+                                <option key={u.id} value={u.id}>{u.name} ({u.location.locationName})</option>
+                            ))}
+                        </select>
+                    </div>
+
+                    <div>
+                          <label className="block text-xs font-medium text-slate-500">Transferred Weight (kg)</label>
+                          <input type="number" className="w-full p-2 border rounded" value={transferData.weight} onChange={e => setTransferData({...transferData, weight: Number(e.target.value)})} />
+                    </div>
+
+                    <Button className="w-full" onClick={handleTransfer} disabled={!transferData.animalId || !transferData.targetButcheryId}>Transfer Stock</Button>
+                </div>
+              </Card>
+            )}
         </div>
     );
+}
+
+// --- MAIN LAYOUT & ROUTING ---
+
+const AppContent: React.FC = () => {
+  const { currentUser, alerts, logout } = useStore();
+  const [currentTab, setCurrentTab] = useState('DASHBOARD');
+
+  // Global Alert Banner
+  const stolenAlerts = alerts.filter(a => a.type === 'STOLEN' && !a.resolved);
+  
+  if (!currentUser) return <LoginView />;
+
+  const renderView = () => {
+    switch(currentUser.role) {
+      case UserRole.FARMER: return <FarmerDashboard />;
+      case UserRole.AUTHORITY: return <AuthorityDashboard />;
+      case UserRole.BUTCHERY: return <ButcheryDashboard />;
+      case UserRole.MARKET_AGENT: return <div className="p-10 text-center">Market Scanner Interface (Scan QR/Iris)</div>;
+      default: return <FarmerDashboard />;
+    }
+  };
+
+  return (
+    <div className="min-h-screen bg-slate-50 text-slate-900 font-sans">
+      {/* Alert Banner */}
+      {stolenAlerts.length > 0 && (
+        <div className="bg-red-600 text-white px-4 py-2 flex items-center justify-between text-sm font-medium shadow-md">
+          <div className="flex items-center gap-2">
+            <ShieldAlert className="w-4 h-4 animate-pulse" />
+            <span>{stolenAlerts.length} Active Stolen Animal Reports</span>
+          </div>
+        </div>
+      )}
+
+      {/* Main Content */}
+      <main className="max-w-md mx-auto min-h-screen bg-white shadow-2xl overflow-hidden relative">
+        {renderView()}
+
+        {/* Bottom Navigation */}
+        <nav className="fixed bottom-0 left-0 right-0 bg-white border-t border-slate-200 py-3 px-6 flex justify-between items-center z-50 max-w-md mx-auto shadow-[0_-4px_6px_-1px_rgba(0,0,0,0.05)]">
+          <button onClick={() => setCurrentTab('DASHBOARD')} className={`${currentTab === 'DASHBOARD' ? 'text-primary' : 'text-slate-400'} flex flex-col items-center gap-1`}>
+            <UserIcon className="w-6 h-6" />
+            <span className="text-[10px] font-bold">Home</span>
+          </button>
+          
+          <button className="flex flex-col items-center gap-1 text-slate-400 relative">
+             <div className="absolute -top-1 -right-1 w-2 h-2 bg-red-500 rounded-full"></div>
+             <ShieldAlert className="w-6 h-6" />
+             <span className="text-[10px] font-bold">Alerts</span>
+          </button>
+
+          <button onClick={logout} className="flex flex-col items-center gap-1 text-slate-400">
+            <LogOut className="w-6 h-6" />
+            <span className="text-[10px] font-bold">Logout</span>
+          </button>
+        </nav>
+      </main>
+    </div>
+  );
 };
 
-const App: React.FC = () => (
-  <ErrorBoundary>
+const App: React.FC = () => {
+  return (
     <StoreProvider>
       <AppContent />
     </StoreProvider>
-  </ErrorBoundary>
-);
+  );
+};
 
 export default App;
