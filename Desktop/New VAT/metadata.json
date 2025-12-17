@@ -1,0 +1,8 @@
+{
+  "name": "Vitalis Animal Tracker (VAT)",
+  "description": "A comprehensive livestock identification, registration, and tracking system for farmers, butcheries, and authorities.",
+  "requestFramePermissions": [
+    "camera",
+    "microphone"
+  ]
+}
